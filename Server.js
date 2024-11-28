@@ -1,101 +1,185 @@
-require('dotenv').config(); // Load environment variables from .env
+require('events').EventEmitter.defaultMaxListeners = 20; 
+
+require('dotenv').config(); // Load environment variables
 const express = require('express');
-const { Client } = require('pg'); // PostgreSQL client
+const { Pool } = require('pg');  // PostgreSQL Pool
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const bcrypt = require('bcryptjs');
 
 const app = express();
-const port = process.env.PORT || 5002; // Allow dynamic port configuration
+const port = process.env.PORT || 5002;
 
-// Middleware setup
-app.use(cors({ origin: 'http://localhost:3000' })); // Enable CORS for frontend
+// Enable CORS for all requests
+app.use(cors());
 app.use(bodyParser.json()); // Parse incoming JSON requests
 
-// PostgreSQL database connection
-const client = new Client({
-  host: process.env.DB_HOST, // e.g., dpg-ct431lq3esus73fc9ds0-a.render.com
-  port: process.env.DB_PORT || 5432,
-  user: process.env.DB_USER, // e.g., your_database_username
-  password: process.env.DB_PASSWORD, // e.g., your_database_password
-  database: process.env.DB_NAME, // e.g., your_database_name
+// Set up PostgreSQL connection using DATABASE_URL from .env
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false, // Disable SSL validation (needed for Render's PostgreSQL)
+    },
 });
 
-// Connect to PostgreSQL
-client.connect(err => {
-  if (err) {
-    console.error("Error connecting to the database:", err.message);
-    process.exit(1);
-  }
-  console.log('Connected to PostgreSQL Database');
-});
-
-// Middleware to log all incoming requests
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  next();
-});
-
-// Routes for users
-app.route('/api/users')
-  .get((req, res) => {
-    client.query('SELECT * FROM users', (err, result) => {
-      if (err) {
-        console.error("Error fetching users:", err.message);
-        return res.status(500).json({ error: 'Failed to fetch users' });
-      }
-      res.json(result.rows); // Return rows from query result
+// Test PostgreSQL connection
+pool.connect()
+    .then(() => {
+        console.log('Connected to PostgreSQL database');
+    })
+    .catch((err) => {
+        console.error('Error connecting to PostgreSQL database:', err);
+        process.exit(1); // Exit the process if the connection fails
     });
-  })
-  .post((req, res) => {
+
+// Root endpoint
+app.get('/', (req, res) => {
+    res.send('Welcome to the backend API');
+});
+
+// User signup
+app.post('/api/signup', async (req, res) => {
     const { username, password } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
+
+    try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const result = await pool.query(
+            'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING *',
+            [username, hashedPassword]
+        );
+        res.status(201).send('Signup successful!');
+    } catch (err) {
+        console.error('Error signing up user:', err);
+        res.status(400).send('Username already exists or invalid data');
     }
+});
 
-    client.query(
-      'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id',
-      [username, password],
-      (err, result) => {
-        if (err) {
-          console.error("Error adding user:", err.message);
-          return res.status(500).json({ error: 'Failed to add user' });
+// User login
+app.post('/api/login', async (req, res) => {
+    const { username, password } = req.body;
+
+    try {
+        const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        const user = result.rows[0];
+
+        if (user && (await bcrypt.compare(password, user.password))) {
+            res.send(user);
+        } else {
+            res.status(401).send('Invalid username or password');
         }
-        res.json({ message: 'User added successfully!', userId: result.rows[0].id });
-      }
-    );
-  });
-
-// Routes for products
-app.route('/api/products')
-  .get((req, res) => {
-    client.query('SELECT * FROM products', (err, result) => {
-      if (err) {
-        console.error("Error fetching products:", err.message);
-        return res.status(500).json({ error: 'Failed to fetch products' });
-      }
-      res.json(result.rows); // Return rows from query result
-    });
-  })
-  .post((req, res) => {
-    const { name, description, category, price, quantity } = req.body;
-    if (!name || !category || price == null || quantity == null) {
-      return res.status(400).json({ error: 'Name, category, price, and quantity are required' });
+    } catch (err) {
+        console.error('Error during login:', err);
+        res.status(500).send('Internal server error');
     }
+});
 
-    client.query(
-      'INSERT INTO products (name, description, category, price, quantity) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-      [name, description, category, price, quantity],
-      (err, result) => {
-        if (err) {
-          console.error("Error adding product:", err.message);
-          return res.status(500).json({ error: 'Failed to add product' });
+// Fetch all users
+app.get('/api/users', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM users');
+        res.send(result.rows);
+    } catch (err) {
+        console.error('Error fetching users:', err);
+        res.status(500).send('Error fetching users');
+    }
+});
+
+// Fetch all products
+app.get('/api/products', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM products');
+        res.send(result.rows);
+    } catch (err) {
+        console.error('Error fetching products:', err);
+        res.status(500).send('Error fetching products');
+    }
+});
+
+// Add a product
+app.post('/api/products', async (req, res) => {
+    const { name, description, price, quantity } = req.body;
+
+    try {
+        await pool.query(
+            'INSERT INTO products (name, description, price, quantity) VALUES ($1, $2, $3, $4)',
+            [name, description, price, quantity]
+        );
+        res.send('Product added successfully!');
+    } catch (err) {
+        console.error('Error adding product:', err);
+        res.status(500).send('Error adding product');
+    }
+});
+
+// Update a product
+app.put('/api/products/:id', async (req, res) => {
+    const { id } = req.params;
+    const { name, description, price, quantity } = req.body;
+
+    try {
+        await pool.query(
+            'UPDATE products SET name = $1, description = $2, price = $3, quantity = $4 WHERE id = $5',
+            [name, description, price, quantity, id]
+        );
+        res.send('Product updated successfully!');
+    } catch (err) {
+        console.error('Error updating product:', err);
+        res.status(500).send('Error updating product');
+    }
+});
+
+// Delete a product
+app.delete('/api/products/:id', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        await pool.query('DELETE FROM products WHERE id = $1', [id]);
+        res.send('Product deleted successfully!');
+    } catch (err) {
+        console.error('Error deleting product:', err);
+        res.status(500).send('Error deleting product');
+    }
+});
+
+// Update a user
+app.put('/api/users/:id', async (req, res) => {
+    const { id } = req.params;
+    const { username, password } = req.body;
+
+    try {
+        if (password) {
+            const hashedPassword = await bcrypt.hash(password, 10);
+            await pool.query(
+                'UPDATE users SET username = $1, password = $2 WHERE id = $3',
+                [username, hashedPassword, id]
+            );
+        } else {
+            await pool.query(
+                'UPDATE users SET username = $1 WHERE id = $2',
+                [username, id]
+            );
         }
-        res.json({ message: 'Product added successfully!', productId: result.rows[0].id });
-      }
-    );
-  });
+        res.send('User updated successfully!');
+    } catch (err) {
+        console.error('Error updating user:', err);
+        res.status(500).send('Error updating user');
+    }
+});
+
+// Delete a user
+app.delete('/api/users/:id', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        await pool.query('DELETE FROM users WHERE id = $1', [id]);
+        res.send('User deleted successfully!');
+    } catch (err) {
+        console.error('Error deleting user:', err);
+        res.status(500).send('Error deleting user');
+    }
+});
 
 // Start the server
 app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
+    console.log(`Server running on http://localhost:${port}`);
 });
