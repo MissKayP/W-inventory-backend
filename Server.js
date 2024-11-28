@@ -1,6 +1,6 @@
-require('dotenv').config();
+require('dotenv').config(); // Load environment variables from .env
 const express = require('express');
-const mysql = require('mysql2');
+const { Client } = require('pg'); // PostgreSQL client
 const cors = require('cors');
 const bodyParser = require('body-parser');
 
@@ -11,21 +11,22 @@ const port = process.env.PORT || 5002; // Allow dynamic port configuration
 app.use(cors({ origin: 'http://localhost:3000' })); // Enable CORS for frontend
 app.use(bodyParser.json()); // Parse incoming JSON requests
 
-// MySQL database connection
-const db = mysql.createConnection({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'test',
+// PostgreSQL database connection
+const client = new Client({
+  host: process.env.DB_HOST, // e.g., dpg-ct431lq3esus73fc9ds0-a.render.com
+  port: process.env.DB_PORT || 5432,
+  user: process.env.DB_USER, // e.g., your_database_username
+  password: process.env.DB_PASSWORD, // e.g., your_database_password
+  database: process.env.DB_NAME, // e.g., your_database_name
 });
 
-// Connect to the MySQL database
-db.connect(err => {
+// Connect to PostgreSQL
+client.connect(err => {
   if (err) {
     console.error("Error connecting to the database:", err.message);
     process.exit(1);
   }
-  console.log('Connected to MySQL Database');
+  console.log('Connected to PostgreSQL Database');
 });
 
 // Middleware to log all incoming requests
@@ -36,146 +37,62 @@ app.use((req, res, next) => {
 
 // Routes for users
 app.route('/api/users')
-  // Get all users
   .get((req, res) => {
-    db.query('SELECT * FROM users', (err, results) => {
+    client.query('SELECT * FROM users', (err, result) => {
       if (err) {
         console.error("Error fetching users:", err.message);
         return res.status(500).json({ error: 'Failed to fetch users' });
       }
-      res.json(results);
+      res.json(result.rows); // Return rows from query result
     });
   })
-  // Add a new user
   .post((req, res) => {
     const { username, password } = req.body;
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
     }
 
-    db.query(
-      'INSERT INTO users (username, password) VALUES (?, ?)',
+    client.query(
+      'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id',
       [username, password],
-      (err, results) => {
+      (err, result) => {
         if (err) {
           console.error("Error adding user:", err.message);
           return res.status(500).json({ error: 'Failed to add user' });
         }
-        res.json({ message: 'User added successfully!', userId: results.insertId });
+        res.json({ message: 'User added successfully!', userId: result.rows[0].id });
       }
     );
-  });
-
-// Routes for users by ID
-app.route('/api/users/:id')
-  // Update a user
-  .put((req, res) => {
-    const { id } = req.params;
-    const { username, password } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
-    }
-
-    db.query(
-      'UPDATE users SET username = ?, password = ? WHERE id = ?',
-      [username, password, id],
-      (err, results) => {
-        if (err) {
-          console.error("Error updating user:", err.message);
-          return res.status(500).json({ error: 'Failed to update user' });
-        }
-        if (results.affectedRows === 0) {
-          return res.status(404).json({ error: 'User not found' });
-        }
-        res.json({ message: 'User updated successfully' });
-      }
-    );
-  })
-  // Delete a user
-  .delete((req, res) => {
-    const { id } = req.params;
-    db.query('DELETE FROM users WHERE id = ?', [id], (err, results) => {
-      if (err) {
-        console.error("Error deleting user:", err.message);
-        return res.status(500).json({ error: 'Failed to delete user' });
-      }
-      if (results.affectedRows === 0) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-      res.json({ message: 'User deleted successfully' });
-    });
   });
 
 // Routes for products
 app.route('/api/products')
-  // Get all products
   .get((req, res) => {
-    db.query('SELECT * FROM products', (err, results) => {
+    client.query('SELECT * FROM products', (err, result) => {
       if (err) {
         console.error("Error fetching products:", err.message);
         return res.status(500).json({ error: 'Failed to fetch products' });
       }
-      res.json(results);
+      res.json(result.rows); // Return rows from query result
     });
   })
-  // Add a new product
   .post((req, res) => {
     const { name, description, category, price, quantity } = req.body;
     if (!name || !category || price == null || quantity == null) {
       return res.status(400).json({ error: 'Name, category, price, and quantity are required' });
     }
 
-    db.query(
-      'INSERT INTO products (name, description, category, price, quantity) VALUES (?, ?, ?, ?, ?)',
+    client.query(
+      'INSERT INTO products (name, description, category, price, quantity) VALUES ($1, $2, $3, $4, $5) RETURNING id',
       [name, description, category, price, quantity],
-      (err, results) => {
+      (err, result) => {
         if (err) {
           console.error("Error adding product:", err.message);
           return res.status(500).json({ error: 'Failed to add product' });
         }
-        res.json({ message: 'Product added successfully!', productId: results.insertId });
+        res.json({ message: 'Product added successfully!', productId: result.rows[0].id });
       }
     );
-  });
-
-// Routes for products by ID
-app.route('/api/products/:id')
-  // Update a product
-  .put((req, res) => {
-    const { id } = req.params;
-    const { name, description, category, price, quantity } = req.body;
-    if (!name || !category || price == null || quantity == null) {
-      return res.status(400).json({ error: 'Name, category, price, and quantity are required' });
-    }
-
-    db.query(
-      'UPDATE products SET name = ?, description = ?, category = ?, price = ?, quantity = ? WHERE id = ?',
-      [name, description, category, price, quantity, id],
-      (err, results) => {
-        if (err) {
-          console.error("Error updating product:", err.message);
-          return res.status(500).json({ error: 'Failed to update product' });
-        }
-        if (results.affectedRows === 0) {
-          return res.status(404).json({ error: 'Product not found' });
-        }
-        res.json({ message: 'Product updated successfully' });
-      }
-    );
-  })
-  // Delete a product
-  .delete((req, res) => {
-    const { id } = req.params;
-    db.query('DELETE FROM products WHERE id = ?', [id], (err, results) => {
-      if (err) {
-        console.error("Error deleting product:", err.message);
-        return res.status(500).json({ error: 'Failed to delete product' });
-      }
-      if (results.affectedRows === 0) {
-        return res.status(404).json({ error: 'Product not found' });
-      }
-      res.json({ message: 'Product deleted successfully' });
-    });
   });
 
 // Start the server
